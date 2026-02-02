@@ -1,0 +1,132 @@
+#----------- Initialization ------------------ #
+units			real
+boundary		p p p
+atom_style		full
+
+#----------- Interactions ------------------ #
+pair_style      lj/gromacs 12 15
+bond_style 		class2
+angle_style     table linear 18001
+dihedral_style  multi/harmonic
+special_bonds   lj 0 0 0.5  
+
+#----------- Simulation model ------------------ #
+read_data 		CG_random.data
+
+# After we obtain the parameters of the ER factors, 
+# We can systematically change the temperature of TARGETT from 100 to 500 K with
+# a interval of 20 K to get the density, MSD, DWF, and relaxation time.
+# The α(T) and β(T) is varied with the target temperature (TARGETT in line 22).
+
+variable 		TI equal 1000          # Initial Temperature
+variable 		T  equal TARGETT       # Final Temperature
+
+##### Calibrated CG LJ parameters;
+##### ER factors of α(T) and β(T);
+##### ε(T) = α(T)ε0, σ(T) = β(T)σ0;
+##### α(T) = 7.3224+(4.6500-7.3224)/(1+exp((310.8277-$T)*0.0135)) 
+##### β(T) = (1.4143e-07)*($T)^2-(4.7721e-05)*($T)+1.0327
+variable        eps equal 7.3224+(4.6500-7.3224)/(1+exp((310.8277-$T)*0.0135))
+variable        eps11 equal ${eps}*0.236816
+variable        eps22 equal ${eps}*0.105706
+variable        eps33 equal ${eps}*0.334656
+variable        sig equal (1.4143e-07)*($T)^2-(4.7721e-05)*($T)+1.0327          
+variable        sig11 equal ${sig}*4.924099
+variable        sig22 equal ${sig}*5.002956
+variable        sig33 equal ${sig}*4.789783
+
+pair_coeff      1 1 ${eps11} ${sig11}
+pair_coeff      2 2 ${eps22} ${sig22} 
+pair_coeff      3 3 ${eps33} ${sig33}
+pair_modify     mix arithmetic
+
+bond_coeff 		1 3.871 91.342 565.50 1825.90
+bond_coeff 		2 4.092 67.080 240.93 225.34
+bond_coeff 		3 3.822 -39.742 31.83 964.59
+
+angle_coeff     1 P1-P1-P1.CG.table P1-P1-P1_TABLE1
+angle_coeff     2 P1-P1-P2.CG.table P1-P1-P2_TABLE1
+angle_coeff     3 P1-P2-P3.CG.table P1-P2-P3_TABLE1
+
+dihedral_coeff  1 3.77880853 -0.556683    -0.79169558  0.15903351   0.58057894   # 2-IBM P1-P1-P1-P1
+dihedral_coeff  2 4.65777441  0.9223158   -1.762214   -0.75273979   0.016394344  # 2-IBM P2-P1-P1-P2
+dihedral_coeff  3 2.27384538  0.027153167  3.6038645  -0.318242457 -1.463751687  # 2-IBM P1-P1-P2-P3
+
+timestep        4
+
+neighbor        2.5 bin
+neigh_modify    delay 5
+
+#----------- Thermo ------------------ #
+thermo          10000
+thermo_style    custom step etotal ke temp pe ebond eangle edihed eimp evdwl ecoul elong press lx ly lz vol density enthalpy
+
+dump            5 all dcd 10000 relax_wrap.dcd
+dump            55 all dcd 10000 relax_unwrap.dcd
+dump_modify     55 unwrap yes
+
+#----------- Energy minimization ------------------ # 
+velocity        all create ${TI} 56345 rot yes
+velocity 	    all zero linear
+minimize 	    1.0e-12 1.0e-12 50000 50000
+
+reset_timestep  0
+
+#----------- NPT annealing ------------------ # 
+fix             50 all npt  temp ${TI} ${TI} 400  iso 1 1000 4000
+run             200000  
+unfix           50
+
+fix             51 all npt  temp ${TI} ${TI} 400  iso 1000 1000 4000
+run             200000  
+unfix           51
+
+fix     	    52 all npt  temp ${TI} ${TI} 400  iso 1000 1 4000
+run             200000
+unfix           52
+
+fix     	    53 all npt  temp ${TI} ${TI} 400  iso 1 1000 4000
+run             200000
+unfix           53
+
+fix             54 all npt  temp ${TI} ${TI} 400  iso 1000 1000 4000
+run             200000  
+unfix           54
+
+write_data      Relax_Anneal.data
+write_restart   Relax_Anneal.rest
+
+#----------- Equilibration ------------------ # 
+fix     	    55 all npt  temp ${TI} ${T} 400  iso 1000 100 4000
+run             1000000
+unfix           55
+
+fix     	    56 all npt  temp ${T} ${T} 400  iso 100 1 4000
+run             1000000
+unfix           56
+
+#----------- Sampling ------------------ # 
+variable        den equal "density"
+fix             65 all print 1000 "${den}" file density.txt
+
+fix     	    57 all npt  temp ${T} ${T} 400  iso 1 1 4000
+run             2000000
+unfix           57
+
+undump          5
+undump          55
+
+write_data      Equil.data
+write_restart   Equil.rest
+
+#----------- MSD sampling ------------------ # 
+dump            5 all dcd 20 wrap.dcd
+dump            55 all dcd 20 unwrap.dcd
+dump_modify     55 unwrap yes
+
+fix     	    57 all npt  temp $T $T 400  iso 1 1 4000
+run             100000
+unfix           57
+
+print "ALL DONE"
+
